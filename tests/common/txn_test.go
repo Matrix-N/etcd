@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -29,30 +30,31 @@ import (
 )
 
 type txnReq struct {
-	compare   []string
-	ifSuccess []string
-	ifFail    []string
-	results   []string
+	compare       []string
+	ifSuccess     []string
+	ifFail        []string
+	expectResults []string
+	expectError   bool
 }
 
 func TestTxnSucc(t *testing.T) {
 	testRunner.BeforeTest(t)
 	reqs := []txnReq{
 		{
-			compare:   []string{`value("key1") != "value2"`, `value("key2") != "value1"`},
-			ifSuccess: []string{"get key1", "get key2"},
-			results:   []string{"SUCCESS", "key1", "value1", "key2", "value2"},
+			compare:       []string{`value("key1") != "value2"`, `value("key2") != "value1"`},
+			ifSuccess:     []string{"get key1", "get key2"},
+			expectResults: []string{"SUCCESS", "key1", "value1", "key2", "value2"},
 		},
 		{
-			compare:   []string{`version("key1") = "1"`, `version("key2") = "1"`},
-			ifSuccess: []string{"get key1", "get key2", `put "key \"with\" space" "value \x23"`},
-			ifFail:    []string{`put key1 "fail"`, `put key2 "fail"`},
-			results:   []string{"SUCCESS", "key1", "value1", "key2", "value2", "OK"},
+			compare:       []string{`version("key1") = "1"`, `version("key2") = "1"`},
+			ifSuccess:     []string{"get key1", "get key2", `put "key \"with\" space" "value \x23"`},
+			ifFail:        []string{`put key1 "fail"`, `put key2 "fail"`},
+			expectResults: []string{"SUCCESS", "key1", "value1", "key2", "value2", "OK"},
 		},
 		{
-			compare:   []string{`version("key \"with\" space") = "1"`},
-			ifSuccess: []string{`get "key \"with\" space"`},
-			results:   []string{"SUCCESS", `key "with" space`, "value \x23"},
+			compare:       []string{`version("key \"with\" space") = "1"`},
+			ifSuccess:     []string{`get "key \"with\" space"`},
+			expectResults: []string{"SUCCESS", `key "with" space`, "value \x23"},
 		},
 	}
 	for _, cfg := range clusterTestCases() {
@@ -63,12 +65,10 @@ func TestTxnSucc(t *testing.T) {
 			defer clus.Close()
 			cc := testutils.MustClient(clus.Client())
 			testutils.ExecuteUntil(ctx, t, func() {
-				if err := cc.Put(ctx, "key1", "value1", config.PutOptions{}); err != nil {
-					t.Fatalf("could not create key:%s, value:%s", "key1", "value1")
-				}
-				if err := cc.Put(ctx, "key2", "value2", config.PutOptions{}); err != nil {
-					t.Fatalf("could not create key:%s, value:%s", "key2", "value2")
-				}
+				err := cc.Put(ctx, "key1", "value1", config.PutOptions{})
+				require.NoErrorf(t, err, "could not create key:%s, value:%s", "key1", "value1")
+				err = cc.Put(ctx, "key2", "value2", config.PutOptions{})
+				require.NoErrorf(t, err, "could not create key:%s, value:%s", "key2", "value2")
 				for _, req := range reqs {
 					resp, err := cc.Txn(ctx, req.compare, req.ifSuccess, req.ifFail, config.TxnOptions{
 						Interactive: true,
@@ -76,7 +76,7 @@ func TestTxnSucc(t *testing.T) {
 					if err != nil {
 						t.Errorf("Txn returned error: %s", err)
 					}
-					assert.Equal(t, req.results, getRespValues(resp))
+					assert.Equal(t, req.expectResults, getRespValues(resp))
 				}
 			})
 		})
@@ -87,16 +87,16 @@ func TestTxnFail(t *testing.T) {
 	testRunner.BeforeTest(t)
 	reqs := []txnReq{
 		{
-			compare:   []string{`version("key") < "0"`},
-			ifSuccess: []string{`put key "success"`},
-			ifFail:    []string{`put key "fail"`},
-			results:   []string{"FAILURE", "OK"},
+			compare:       []string{`version("key") < "0"`},
+			ifSuccess:     []string{`put key "success"`},
+			ifFail:        []string{`put key "fail"`},
+			expectResults: []string{"FAILURE", "OK"},
 		},
 		{
-			compare:   []string{`value("key1") != "value1"`},
-			ifSuccess: []string{`put key1 "success"`},
-			ifFail:    []string{`put key1 "fail"`},
-			results:   []string{"FAILURE", "OK"},
+			compare:       []string{`value("key1") != "value1"`},
+			ifSuccess:     []string{`put key1 "success"`},
+			ifFail:        []string{`put key1 "fail"`},
+			expectResults: []string{"FAILURE", "OK"},
 		},
 	}
 	for _, cfg := range clusterTestCases() {
@@ -107,9 +107,8 @@ func TestTxnFail(t *testing.T) {
 			defer clus.Close()
 			cc := testutils.MustClient(clus.Client())
 			testutils.ExecuteUntil(ctx, t, func() {
-				if err := cc.Put(ctx, "key1", "value1", config.PutOptions{}); err != nil {
-					t.Fatalf("could not create key:%s, value:%s", "key1", "value1")
-				}
+				err := cc.Put(ctx, "key1", "value1", config.PutOptions{})
+				require.NoErrorf(t, err, "could not create key:%s, value:%s", "key1", "value1")
 				for _, req := range reqs {
 					resp, err := cc.Txn(ctx, req.compare, req.ifSuccess, req.ifFail, config.TxnOptions{
 						Interactive: true,
@@ -117,7 +116,7 @@ func TestTxnFail(t *testing.T) {
 					if err != nil {
 						t.Errorf("Txn returned error: %s", err)
 					}
-					assert.Equal(t, req.results, getRespValues(resp))
+					assert.Equal(t, req.expectResults, getRespValues(resp))
 				}
 			})
 		})

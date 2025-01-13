@@ -15,16 +15,22 @@
 package etcdmain
 
 import (
+	"errors"
+	"flag"
 	"fmt"
 	"net/url"
 	"os"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"sigs.k8s.io/yaml"
 
+	"go.etcd.io/etcd/pkg/v3/featuregate"
+	"go.etcd.io/etcd/pkg/v3/flags"
 	"go.etcd.io/etcd/server/v3/embed"
+	"go.etcd.io/etcd/server/v3/features"
 )
 
 func TestConfigParsingMemberFlags(t *testing.T) {
@@ -37,6 +43,7 @@ func TestConfigParsingMemberFlags(t *testing.T) {
 		"-experimental-snapshot-catchup-entries=1000",
 		"-listen-peer-urls=http://localhost:8000,https://localhost:8001",
 		"-listen-client-urls=http://localhost:7000,https://localhost:7001",
+		"-listen-client-http-urls=http://localhost:7002,https://localhost:7003",
 		// it should be set if -listen-client-urls is set
 		"-advertise-client-urls=http://localhost:7000,https://localhost:7001",
 	}
@@ -54,13 +61,14 @@ func TestConfigFileMemberFields(t *testing.T) {
 	yc := struct {
 		Dir                    string `json:"data-dir"`
 		MaxSnapFiles           uint   `json:"max-snapshots"`
-		MaxWalFiles            uint   `json:"max-wals"`
+		MaxWALFiles            uint   `json:"max-wals"`
 		Name                   string `json:"name"`
 		SnapshotCount          uint64 `json:"snapshot-count"`
 		SnapshotCatchUpEntries uint64 `json:"experimental-snapshot-catch-up-entries"`
-		LPUrls                 string `json:"listen-peer-urls"`
-		LCUrls                 string `json:"listen-client-urls"`
-		AcurlsCfgFile          string `json:"advertise-client-urls"`
+		ListenPeerURLs         string `json:"listen-peer-urls"`
+		ListenClientURLs       string `json:"listen-client-urls"`
+		ListenClientHTTPURLs   string `json:"listen-client-http-urls"`
+		AdvertiseClientURLs    string `json:"advertise-client-urls"`
 	}{
 		"testdir",
 		10,
@@ -70,6 +78,7 @@ func TestConfigFileMemberFields(t *testing.T) {
 		1000,
 		"http://localhost:8000,https://localhost:8001",
 		"http://localhost:7000,https://localhost:7001",
+		"http://localhost:7002,https://localhost:7003",
 		"http://localhost:7000,https://localhost:7001",
 	}
 
@@ -113,8 +122,8 @@ func TestConfigFileClusteringFields(t *testing.T) {
 		InitialCluster      string `json:"initial-cluster"`
 		ClusterState        string `json:"initial-cluster-state"`
 		InitialClusterToken string `json:"initial-cluster-token"`
-		Apurls              string `json:"initial-advertise-peer-urls"`
-		Acurls              string `json:"advertise-client-urls"`
+		AdvertisePeerUrls   string `json:"initial-advertise-peer-urls"`
+		AdvertiseClientUrls string `json:"advertise-client-urls"`
 	}{
 		"0=http://localhost:8000",
 		"existing",
@@ -217,7 +226,7 @@ func TestConfigParsingConflictClusteringFlags(t *testing.T) {
 
 	for i, tt := range conflictArgs {
 		cfg := newConfig()
-		if err := cfg.parse(tt); err != embed.ErrConflictBootstrapFlags {
+		if err := cfg.parse(tt); !errors.Is(err, embed.ErrConflictBootstrapFlags) {
 			t.Errorf("%d: err = %v, want %v", i, err, embed.ErrConflictBootstrapFlags)
 		}
 	}
@@ -260,7 +269,7 @@ func TestConfigFileConflictClusteringFlags(t *testing.T) {
 		args := []string{fmt.Sprintf("--config-file=%s", tmpfile.Name())}
 
 		cfg := newConfig()
-		if err := cfg.parse(args); err != embed.ErrConflictBootstrapFlags {
+		if err := cfg.parse(args); !errors.Is(err, embed.ErrConflictBootstrapFlags) {
 			t.Errorf("%d: err = %v, want %v", i, err, embed.ErrConflictBootstrapFlags)
 		}
 	}
@@ -303,7 +312,7 @@ func TestConfigParsingMissedAdvertiseClientURLsFlag(t *testing.T) {
 
 	for i, tt := range tests {
 		cfg := newConfig()
-		if err := cfg.parse(tt.args); err != tt.werr {
+		if err := cfg.parse(tt.args); !errors.Is(err, tt.werr) {
 			t.Errorf("%d: err = %v, want %v", i, err, tt.werr)
 		}
 	}
@@ -375,6 +384,191 @@ func TestConfigFileElectionTimeout(t *testing.T) {
 	}
 }
 
+func TestFlagsPresentInHelp(t *testing.T) {
+	cfg := newConfig()
+	cfg.cf.flagSet.VisitAll(func(f *flag.Flag) {
+		if _, ok := f.Value.(*flags.IgnoredFlag); ok {
+			// Ignored flags do not need to be in the help
+			return
+		}
+
+		flagText := fmt.Sprintf("--%s", f.Name)
+		if !strings.Contains(flagsline, flagText) && !strings.Contains(usageline, flagText) {
+			t.Errorf("Neither flagsline nor usageline in help.go contains flag named %s", flagText)
+		}
+	})
+}
+
+func TestParseFeatureGateFlags(t *testing.T) {
+	testCases := []struct {
+		name             string
+		args             []string
+		expectErr        bool
+		expectedFeatures map[featuregate.Feature]bool
+	}{
+		{
+			name: "default",
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.StopGRPCServiceOnDefrag: false,
+				features.DistributedTracing:      false,
+			},
+		},
+		{
+			name: "cannot set both experimental flag and feature gate flag",
+			args: []string{
+				"--experimental-stop-grpc-service-on-defrag=false",
+				"--feature-gates=StopGRPCServiceOnDefrag=true",
+			},
+			expectErr: true,
+		},
+		{
+			name: "ok to set different experimental flag and feature gate flag",
+			args: []string{
+				"--experimental-stop-grpc-service-on-defrag=true",
+				"--feature-gates=DistributedTracing=true",
+			},
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.StopGRPCServiceOnDefrag: true,
+				features.DistributedTracing:      true,
+			},
+		},
+		{
+			name: "can set feature gate from experimental flag",
+			args: []string{
+				"--experimental-stop-grpc-service-on-defrag=true",
+			},
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.StopGRPCServiceOnDefrag: true,
+				features.DistributedTracing:      false,
+			},
+		},
+		{
+			name: "can set feature gate from feature gate flag",
+			args: []string{
+				"--feature-gates=StopGRPCServiceOnDefrag=true,DistributedTracing=true",
+			},
+			expectedFeatures: map[featuregate.Feature]bool{
+				features.StopGRPCServiceOnDefrag: true,
+				features.DistributedTracing:      true,
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := newConfig()
+			err := cfg.parse(tc.args)
+			if tc.expectErr {
+				if err == nil {
+					t.Fatal("expect parse error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			for k, v := range tc.expectedFeatures {
+				if cfg.ec.ServerFeatureGate.Enabled(k) != v {
+					t.Errorf("expected feature gate %s=%v, got %v", k, v, cfg.ec.ServerFeatureGate.Enabled(k))
+				}
+			}
+		})
+	}
+}
+
+// TestCompactHashCheckTimeFlagMigration tests the migration from
+// --experimental-compact-hash-check-time to --compact-hash-check-time
+// TODO: delete in v3.7
+func TestCompactHashCheckTimeFlagMigration(t *testing.T) {
+	testCases := []struct {
+		name                             string
+		compactHashCheckTime             string
+		experimentalCompactHashCheckTime string
+		useConfigFile                    bool
+		expectErr                        bool
+		expectedCompactHashCheckTime     time.Duration
+	}{
+		{
+			name:                         "default",
+			expectedCompactHashCheckTime: time.Minute,
+		},
+		{
+			name:                             "cannot set both experimental flag and non experimental flag",
+			compactHashCheckTime:             "2m",
+			experimentalCompactHashCheckTime: "3m",
+			expectErr:                        true,
+		},
+		{
+			name:                             "can set experimental flag",
+			experimentalCompactHashCheckTime: "3m",
+			expectedCompactHashCheckTime:     3 * time.Minute,
+		},
+		{
+			name:                         "can set non experimental flag",
+			compactHashCheckTime:         "2m",
+			expectedCompactHashCheckTime: 2 * time.Minute,
+		},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmdLineArgs := []string{}
+			yc := struct {
+				ExperimentalCompactHashCheckTime time.Duration `json:"experimental-compact-hash-check-time,omitempty"`
+				CompactHashCheckTime             time.Duration `json:"compact-hash-check-time,omitempty"`
+			}{}
+
+			if tc.compactHashCheckTime != "" {
+				cmdLineArgs = append(cmdLineArgs, fmt.Sprintf("--compact-hash-check-time=%s", tc.compactHashCheckTime))
+				compactHashCheckTime, err := time.ParseDuration(tc.compactHashCheckTime)
+				if err != nil {
+					t.Fatal(err)
+				}
+				yc.CompactHashCheckTime = compactHashCheckTime
+			}
+
+			if tc.experimentalCompactHashCheckTime != "" {
+				cmdLineArgs = append(cmdLineArgs, fmt.Sprintf("--experimental-compact-hash-check-time=%s", tc.experimentalCompactHashCheckTime))
+				experimentalCompactHashCheckTime, err := time.ParseDuration(tc.experimentalCompactHashCheckTime)
+				if err != nil {
+					t.Fatal(err)
+				}
+				yc.ExperimentalCompactHashCheckTime = experimentalCompactHashCheckTime
+			}
+
+			b, err := yaml.Marshal(&yc)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			tmpfile := mustCreateCfgFile(t, b)
+			defer os.Remove(tmpfile.Name())
+
+			cfgFromCmdLine := newConfig()
+			errFromCmdLine := cfgFromCmdLine.parse(cmdLineArgs)
+
+			cfgFromFile := newConfig()
+			errFromFile := cfgFromFile.parse([]string{fmt.Sprintf("--config-file=%s", tmpfile.Name())})
+
+			if tc.expectErr {
+				if errFromCmdLine == nil || errFromFile == nil {
+					t.Fatal("expect parse error")
+				}
+				return
+			}
+			if errFromCmdLine != nil || errFromFile != nil {
+				t.Fatal(err)
+			}
+
+			if cfgFromCmdLine.ec.CompactHashCheckTime != tc.expectedCompactHashCheckTime {
+				t.Errorf("expected CompactHashCheckTime=%v, got %v", tc.expectedCompactHashCheckTime, cfgFromCmdLine.ec.CompactHashCheckTime)
+			}
+			if cfgFromFile.ec.CompactHashCheckTime != tc.expectedCompactHashCheckTime {
+				t.Errorf("expected CompactHashCheckTime=%v, got %v", tc.expectedCompactHashCheckTime, cfgFromFile.ec.CompactHashCheckTime)
+			}
+		})
+	}
+}
+
 func mustCreateCfgFile(t *testing.T, b []byte) *os.File {
 	tmpfile, err := os.CreateTemp("", "servercfg")
 	if err != nil {
@@ -396,8 +590,9 @@ func mustCreateCfgFile(t *testing.T, b []byte) *os.File {
 func validateMemberFlags(t *testing.T, cfg *config) {
 	wcfg := &embed.Config{
 		Dir:                    "testdir",
-		LPUrls:                 []url.URL{{Scheme: "http", Host: "localhost:8000"}, {Scheme: "https", Host: "localhost:8001"}},
-		LCUrls:                 []url.URL{{Scheme: "http", Host: "localhost:7000"}, {Scheme: "https", Host: "localhost:7001"}},
+		ListenPeerUrls:         []url.URL{{Scheme: "http", Host: "localhost:8000"}, {Scheme: "https", Host: "localhost:8001"}},
+		ListenClientUrls:       []url.URL{{Scheme: "http", Host: "localhost:7000"}, {Scheme: "https", Host: "localhost:7001"}},
+		ListenClientHttpUrls:   []url.URL{{Scheme: "http", Host: "localhost:7002"}, {Scheme: "https", Host: "localhost:7003"}},
 		MaxSnapFiles:           10,
 		MaxWalFiles:            10,
 		Name:                   "testname",
@@ -423,18 +618,21 @@ func validateMemberFlags(t *testing.T, cfg *config) {
 	if cfg.ec.SnapshotCatchUpEntries != wcfg.SnapshotCatchUpEntries {
 		t.Errorf("snapshot catch up entries = %v, want %v", cfg.ec.SnapshotCatchUpEntries, wcfg.SnapshotCatchUpEntries)
 	}
-	if !reflect.DeepEqual(cfg.ec.LPUrls, wcfg.LPUrls) {
-		t.Errorf("listen-peer-urls = %v, want %v", cfg.ec.LPUrls, wcfg.LPUrls)
+	if !reflect.DeepEqual(cfg.ec.ListenPeerUrls, wcfg.ListenPeerUrls) {
+		t.Errorf("listen-peer-urls = %v, want %v", cfg.ec.ListenPeerUrls, wcfg.ListenPeerUrls)
 	}
-	if !reflect.DeepEqual(cfg.ec.LCUrls, wcfg.LCUrls) {
-		t.Errorf("listen-client-urls = %v, want %v", cfg.ec.LCUrls, wcfg.LCUrls)
+	if !reflect.DeepEqual(cfg.ec.ListenClientUrls, wcfg.ListenClientUrls) {
+		t.Errorf("listen-client-urls = %v, want %v", cfg.ec.ListenClientUrls, wcfg.ListenClientUrls)
+	}
+	if !reflect.DeepEqual(cfg.ec.ListenClientHttpUrls, wcfg.ListenClientHttpUrls) {
+		t.Errorf("listen-client-http-urls = %v, want %v", cfg.ec.ListenClientHttpUrls, wcfg.ListenClientHttpUrls)
 	}
 }
 
 func validateClusteringFlags(t *testing.T, cfg *config) {
 	wcfg := newConfig()
-	wcfg.ec.APUrls = []url.URL{{Scheme: "http", Host: "localhost:8000"}, {Scheme: "https", Host: "localhost:8001"}}
-	wcfg.ec.ACUrls = []url.URL{{Scheme: "http", Host: "localhost:7000"}, {Scheme: "https", Host: "localhost:7001"}}
+	wcfg.ec.AdvertisePeerUrls = []url.URL{{Scheme: "http", Host: "localhost:8000"}, {Scheme: "https", Host: "localhost:8001"}}
+	wcfg.ec.AdvertiseClientUrls = []url.URL{{Scheme: "http", Host: "localhost:7000"}, {Scheme: "https", Host: "localhost:7001"}}
 	wcfg.ec.ClusterState = embed.ClusterStateFlagExisting
 	wcfg.ec.InitialCluster = "0=http://localhost:8000"
 	wcfg.ec.InitialClusterToken = "etcdtest"
@@ -448,10 +646,10 @@ func validateClusteringFlags(t *testing.T, cfg *config) {
 	if cfg.ec.InitialClusterToken != wcfg.ec.InitialClusterToken {
 		t.Errorf("initialClusterToken = %v, want %v", cfg.ec.InitialClusterToken, wcfg.ec.InitialClusterToken)
 	}
-	if !reflect.DeepEqual(cfg.ec.APUrls, wcfg.ec.APUrls) {
-		t.Errorf("initial-advertise-peer-urls = %v, want %v", cfg.ec.APUrls, wcfg.ec.APUrls)
+	if !reflect.DeepEqual(cfg.ec.AdvertisePeerUrls, wcfg.ec.AdvertisePeerUrls) {
+		t.Errorf("initial-advertise-peer-urls = %v, want %v", cfg.ec.AdvertisePeerUrls, wcfg.ec.AdvertisePeerUrls)
 	}
-	if !reflect.DeepEqual(cfg.ec.ACUrls, wcfg.ec.ACUrls) {
-		t.Errorf("advertise-client-urls = %v, want %v", cfg.ec.ACUrls, wcfg.ec.ACUrls)
+	if !reflect.DeepEqual(cfg.ec.AdvertiseClientUrls, wcfg.ec.AdvertiseClientUrls) {
+		t.Errorf("advertise-client-urls = %v, want %v", cfg.ec.AdvertiseClientUrls, wcfg.ec.AdvertiseClientUrls)
 	}
 }

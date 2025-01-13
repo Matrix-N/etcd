@@ -28,7 +28,6 @@ import (
 	"go.etcd.io/etcd/server/v3/storage/datadir"
 	"go.etcd.io/etcd/server/v3/storage/schema"
 	"go.etcd.io/etcd/server/v3/storage/wal"
-	"go.etcd.io/etcd/server/v3/storage/wal/walpb"
 )
 
 // NewMigrateCommand prints out the version of etcd.
@@ -85,7 +84,7 @@ func (o *migrateOptions) Config() (*migrateConfig, error) {
 	}
 	c.targetVersion, err = semver.NewVersion(o.targetVersion + ".0")
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse target version: %v", err)
+		return nil, fmt.Errorf("failed to parse target version: %w", err)
 	}
 	if c.targetVersion.LessThan(version.V3_5) {
 		return nil, fmt.Errorf(`target version %q not supported. Minimal "3.5"`, storageVersionToString(c.targetVersion))
@@ -94,15 +93,19 @@ func (o *migrateOptions) Config() (*migrateConfig, error) {
 	dbPath := datadir.ToBackendFileName(o.dataDir)
 	c.be = backend.NewDefaultBackend(GetLogger(), dbPath)
 
-	walPath := datadir.ToWalDir(o.dataDir)
-	w, err := wal.OpenForRead(c.lg, walPath, walpb.Snapshot{})
+	walPath := datadir.ToWALDir(o.dataDir)
+	walSnap, err := getLatestWALSnap(c.lg, o.dataDir)
 	if err != nil {
-		return nil, fmt.Errorf(`failed to open wal: %v`, err)
+		return nil, fmt.Errorf("failed to get the lastest snapshot: %w", err)
+	}
+	w, err := wal.OpenForRead(c.lg, walPath, walSnap)
+	if err != nil {
+		return nil, fmt.Errorf(`failed to open wal: %w`, err)
 	}
 	defer w.Close()
 	c.walVersion, err = wal.ReadWALVersion(w)
 	if err != nil {
-		return nil, fmt.Errorf(`failed to read wal: %v`, err)
+		return nil, fmt.Errorf(`failed to read wal: %w`, err)
 	}
 
 	return c, nil

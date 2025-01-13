@@ -50,7 +50,8 @@ func TestTracing(t *testing.T) {
 	srv := grpc.NewServer()
 	traceservice.RegisterTraceServiceServer(srv, &traceServer{
 		traceFound: traceFound,
-		filterFunc: containsNodeListSpan})
+		filterFunc: containsNodeListSpan,
+	})
 
 	go srv.Serve(listener)
 	defer srv.Stop()
@@ -70,7 +71,9 @@ func TestTracing(t *testing.T) {
 
 	select {
 	case <-etcdSrv.Server.ReadyNotify():
-	case <-time.After(1 * time.Second):
+	case <-time.After(5 * time.Second):
+		// default randomized election timeout is 1 to 2s, single node will fast-forward 900ms
+		// change the timeout from 1 to 5 seconds to ensure de-flaking this test
 		t.Fatalf("failed to start embed.Etcd for test")
 	}
 
@@ -90,8 +93,9 @@ func TestTracing(t *testing.T) {
 
 	dialOptions := []grpc.DialOption{
 		grpc.WithUnaryInterceptor(otelgrpc.UnaryClientInterceptor(tracingOpts...)),
-		grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor(tracingOpts...))}
-	ccfg := clientv3.Config{DialOptions: dialOptions, Endpoints: []string{cfg.ACUrls[0].String()}}
+		grpc.WithStreamInterceptor(otelgrpc.StreamClientInterceptor(tracingOpts...)),
+	}
+	ccfg := clientv3.Config{DialOptions: dialOptions, Endpoints: []string{cfg.AdvertiseClientUrls[0].String()}}
 	cli, err := integration.NewClient(t, ccfg)
 	if err != nil {
 		etcdSrv.Close()
@@ -139,7 +143,7 @@ type traceServer struct {
 }
 
 func (t *traceServer) Export(ctx context.Context, req *traceservice.ExportTraceServiceRequest) (*traceservice.ExportTraceServiceResponse, error) {
-	var emptyValue = traceservice.ExportTraceServiceResponse{}
+	emptyValue := traceservice.ExportTraceServiceResponse{}
 	if t.filterFunc(req) {
 		t.traceFound <- struct{}{}
 	}

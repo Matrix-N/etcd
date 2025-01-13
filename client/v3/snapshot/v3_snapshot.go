@@ -45,7 +45,7 @@ func hasChecksum(n int64) bool {
 // selected node, and saved snapshot is the point-in-time state of
 // the selected node.
 // Etcd <v3.6 will return "" as version.
-func SaveWithVersion(ctx context.Context, lg *zap.Logger, cfg clientv3.Config, dbPath string) (version string, err error) {
+func SaveWithVersion(ctx context.Context, lg *zap.Logger, cfg clientv3.Config, dbPath string) (string, error) {
 	cfg.Logger = lg.Named("client")
 	if len(cfg.Endpoints) != 1 {
 		return "", fmt.Errorf("snapshot must be requested to one selected node, not multiple %v", cfg.Endpoints)
@@ -62,7 +62,7 @@ func SaveWithVersion(ctx context.Context, lg *zap.Logger, cfg clientv3.Config, d
 	var f *os.File
 	f, err = os.OpenFile(partpath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fileutil.PrivateFileMode)
 	if err != nil {
-		return "", fmt.Errorf("could not open %s (%v)", partpath, err)
+		return "", fmt.Errorf("could not open %s (%w)", partpath, err)
 	}
 	lg.Info("created temporary db file", zap.String("path", partpath))
 
@@ -91,11 +91,11 @@ func SaveWithVersion(ctx context.Context, lg *zap.Logger, cfg clientv3.Config, d
 		zap.String("endpoint", cfg.Endpoints[0]),
 		zap.String("size", humanize.Bytes(uint64(size))),
 		zap.Duration("took", time.Since(start)),
-		zap.String("etcd-version", version),
+		zap.String("etcd-version", resp.Version),
 	)
 
 	if err = os.Rename(partpath, dbPath); err != nil {
-		return resp.Version, fmt.Errorf("could not rename %s to %s (%v)", partpath, dbPath, err)
+		return resp.Version, fmt.Errorf("could not rename %s to %s (%w)", partpath, dbPath, err)
 	}
 	lg.Info("saved", zap.String("path", dbPath))
 	return resp.Version, nil

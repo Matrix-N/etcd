@@ -230,7 +230,8 @@ func TestMemberPromote(t *testing.T) {
 	followerIdx := (leaderIdx + 1) % 3
 	capi := clus.Client(followerIdx)
 
-	urls := []string{"http://127.0.0.1:1234"}
+	learnerMember := clus.MustNewMember(t)
+	urls := learnerMember.PeerURLs.StringSlice()
 	memberAddResp, err := capi.MemberAddAsLearner(context.Background(), urls)
 	if err != nil {
 		t.Fatalf("failed to add member %v", err)
@@ -262,11 +263,11 @@ func TestMemberPromote(t *testing.T) {
 		t.Fatalf("expecting error to contain %s, got %s", expectedErrKeywords, err.Error())
 	}
 
-	// create and launch learner member based on the response of V3 Member Add API.
+	// Initialize and launch learner member based on the response of V3 Member Add API.
 	// (the response has information on peer urls of the existing members in cluster)
-	learnerMember := clus.MustNewMember(t, memberAddResp)
+	clus.InitializeMemberWithResponse(t, learnerMember, memberAddResp)
 
-	if err := learnerMember.Launch(); err != nil {
+	if err = learnerMember.Launch(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -294,7 +295,7 @@ func TestMemberPromote(t *testing.T) {
 
 // TestMemberPromoteMemberNotLearner ensures that promoting a voting member fails.
 func TestMemberPromoteMemberNotLearner(t *testing.T) {
-	integration2.BeforeTest(t)
+	integration2.BeforeTest(t, integration2.WithFailpoint("raftBeforeAdvance", `sleep(100)`))
 
 	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3})
 	defer clus.Terminate(t)
@@ -379,7 +380,7 @@ func TestMemberPromoteMemberNotExist(t *testing.T) {
 
 // TestMaxLearnerInCluster verifies that the maximum number of learners allowed in a cluster
 func TestMaxLearnerInCluster(t *testing.T) {
-	integration2.BeforeTest(t)
+	integration2.BeforeTest(t, integration2.WithFailpoint("raftBeforeAdvance", `sleep(100)`))
 
 	// 1. start with a cluster with 3 voting member and max learner 2
 	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 3, ExperimentalMaxLearners: 2, DisableStrictReconfigCheck: true})
@@ -387,7 +388,9 @@ func TestMaxLearnerInCluster(t *testing.T) {
 
 	// 2. adding 2 learner members should succeed
 	for i := 0; i < 2; i++ {
-		_, err := clus.Client(0).MemberAddAsLearner(context.Background(), []string{fmt.Sprintf("http://127.0.0.1:123%d", i)})
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := clus.Client(0).MemberAddAsLearner(ctx, []string{fmt.Sprintf("http://127.0.0.1:123%d", i)})
+		cancel()
 		if err != nil {
 			t.Fatalf("failed to add learner member %v", err)
 		}
