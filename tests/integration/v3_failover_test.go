@@ -18,6 +18,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"testing"
 	"time"
 
@@ -119,7 +120,6 @@ func putWithRetries(t *testing.T, cli *clientv3.Client, key, val string, retryCo
 			}
 			return nil
 		}()
-
 		if err != nil {
 			retryCount--
 			if shouldRetry(err) {
@@ -148,11 +148,10 @@ func getWithRetries(t *testing.T, cli *clientv3.Client, key, val string, retryCo
 				t.Fatalf("Expected 1 key, got %d", len(resp.Kvs))
 			}
 			if !bytes.Equal([]byte(val), resp.Kvs[0].Value) {
-				t.Fatalf("Unexpected value, expected: %s, got: %s", val, string(resp.Kvs[0].Value))
+				t.Fatalf("Unexpected value, expected: %s, got: %s", val, resp.Kvs[0].Value)
 			}
 			return nil
 		}()
-
 		if err != nil {
 			retryCount--
 			if shouldRetry(err) {
@@ -167,7 +166,7 @@ func getWithRetries(t *testing.T, cli *clientv3.Client, key, val string, retryCo
 
 func shouldRetry(err error) bool {
 	if clientv3test.IsClientTimeout(err) || clientv3test.IsServerCtxTimeout(err) ||
-		err == rpctypes.ErrTimeout || err == rpctypes.ErrTimeoutDueToLeaderFail {
+		errors.Is(err, rpctypes.ErrTimeout) || errors.Is(err, rpctypes.ErrTimeoutDueToLeaderFail) {
 		return true
 	}
 	return false

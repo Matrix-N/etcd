@@ -15,6 +15,7 @@
 package schema
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -135,7 +136,7 @@ func TestActionListRevert(t *testing.T) {
 
 			UnsafeCreateMetaBucket(tx)
 			err := tc.actions.unsafeExecute(lg, tx)
-			if err != tc.expectError {
+			if !errors.Is(err, tc.expectError) {
 				t.Errorf("Unexpected error or lack thereof, expected: %v, got: %v", tc.expectError, err)
 			}
 			assertBucketState(t, tx, Meta, tc.expectState)
@@ -147,17 +148,17 @@ type brokenAction struct{}
 
 var errBrokenAction = fmt.Errorf("broken action error")
 
-func (c brokenAction) unsafeDo(tx backend.BatchTx) (action, error) {
+func (c brokenAction) unsafeDo(tx backend.UnsafeReadWriter) (action, error) {
 	return nil, errBrokenAction
 }
 
-func putKeyValues(tx backend.BatchTx, bucket backend.Bucket, kvs map[string]string) {
+func putKeyValues(tx backend.UnsafeWriter, bucket backend.Bucket, kvs map[string]string) {
 	for k, v := range kvs {
 		tx.UnsafePut(bucket, []byte(k), []byte(v))
 	}
 }
 
-func assertBucketState(t *testing.T, tx backend.BatchTx, bucket backend.Bucket, expect map[string]string) {
+func assertBucketState(t *testing.T, tx backend.UnsafeReadWriter, bucket backend.Bucket, expect map[string]string) {
 	t.Helper()
 	got := map[string]string{}
 	ks, vs := tx.UnsafeRange(bucket, []byte("\x00"), []byte("\xff"), 0)
