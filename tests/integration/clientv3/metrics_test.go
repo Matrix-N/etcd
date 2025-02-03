@@ -16,7 +16,9 @@ package clientv3test
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -25,7 +27,8 @@ import (
 	"testing"
 	"time"
 
-	grpcprom "github.com/grpc-ecosystem/go-grpc-prometheus"
+	grpcprom "github.com/grpc-ecosystem/go-grpc-middleware/providers/prometheus"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"google.golang.org/grpc"
 
@@ -59,13 +62,11 @@ func TestV3ClientMetrics(t *testing.T) {
 	// listen for all Prometheus metrics
 
 	go func() {
-		var err error
-
 		defer close(donec)
 
-		err = srv.Serve(ln)
-		if err != nil && !transport.IsClosedConnError(err) {
-			t.Errorf("Err serving http requests: %v", err)
+		serr := srv.Serve(ln)
+		if serr != nil && !transport.IsClosedConnError(serr) {
+			t.Errorf("Err serving http requests: %v", serr)
 		}
 	}()
 
@@ -74,11 +75,14 @@ func TestV3ClientMetrics(t *testing.T) {
 	clus := integration2.NewCluster(t, &integration2.ClusterConfig{Size: 1})
 	defer clus.Terminate(t)
 
+	clientMetrics := grpcprom.NewClientMetrics()
+	prometheus.Register(clientMetrics)
+
 	cfg := clientv3.Config{
-		Endpoints: []string{clus.Members[0].GRPCURL()},
+		Endpoints: []string{clus.Members[0].GRPCURL},
 		DialOptions: []grpc.DialOption{
-			grpc.WithUnaryInterceptor(grpcprom.UnaryClientInterceptor),
-			grpc.WithStreamInterceptor(grpcprom.StreamClientInterceptor),
+			grpc.WithUnaryInterceptor(clientMetrics.UnaryClientInterceptor()),
+			grpc.WithStreamInterceptor(clientMetrics.StreamClientInterceptor()),
 		},
 	}
 	cli, cerr := integration2.NewClient(t, cfg)
@@ -146,6 +150,24 @@ func sumCountersForMetricAndLabels(t *testing.T, url string, metricName string, 
 }
 
 func getHTTPBodyAsLines(t *testing.T, url string) []string {
+	data := getHTTPBodyAsBytes(t, url)
+
+	reader := bufio.NewReader(bytes.NewReader(data))
+	var lines []string
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			t.Fatalf("error reading: %v", err)
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+func getHTTPBodyAsBytes(t *testing.T, url string) []byte {
 	cfgtls := transport.TLSInfo{}
 	tr, err := transport.NewTransport(cfgtls, time.Second)
 	if err != nil {
@@ -161,20 +183,10 @@ func getHTTPBodyAsLines(t *testing.T, url string) []string {
 	if err != nil {
 		t.Fatalf("Error fetching: %v", err)
 	}
-
-	reader := bufio.NewReader(resp.Body)
-	var lines []string
-	for {
-		line, err := reader.ReadString('\n')
-		if err != nil {
-			if err == io.EOF {
-				break
-			} else {
-				t.Fatalf("error reading: %v", err)
-			}
-		}
-		lines = append(lines, line)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("Error reading http body: %v", err)
 	}
-	resp.Body.Close()
-	return lines
+	return body
 }

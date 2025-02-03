@@ -20,6 +20,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	pb "go.etcd.io/etcd/api/v3/etcdserverpb"
 	epb "go.etcd.io/etcd/server/v3/etcdserver/api/v3election/v3electionpb"
 	"go.etcd.io/etcd/tests/v3/framework/integration"
@@ -33,13 +35,9 @@ func TestV3ElectionCampaign(t *testing.T) {
 	defer clus.Terminate(t)
 
 	lease1, err1 := integration.ToGRPC(clus.RandClient()).Lease.LeaseGrant(context.TODO(), &pb.LeaseGrantRequest{TTL: 30})
-	if err1 != nil {
-		t.Fatal(err1)
-	}
+	require.NoError(t, err1)
 	lease2, err2 := integration.ToGRPC(clus.RandClient()).Lease.LeaseGrant(context.TODO(), &pb.LeaseGrantRequest{TTL: 30})
-	if err2 != nil {
-		t.Fatal(err2)
-	}
+	require.NoError(t, err2)
 
 	lc := integration.ToGRPC(clus.Client(0)).Election
 	req1 := &epb.CampaignRequest{Name: []byte("foo"), Lease: lease1.ID, Value: []byte("abc")}
@@ -127,13 +125,9 @@ func TestV3ElectionObserve(t *testing.T) {
 	}
 
 	lease1, err1 := integration.ToGRPC(clus.RandClient()).Lease.LeaseGrant(context.TODO(), &pb.LeaseGrantRequest{TTL: 30})
-	if err1 != nil {
-		t.Fatal(err1)
-	}
+	require.NoError(t, err1)
 	c1, cerr1 := lc.Campaign(context.TODO(), &epb.CampaignRequest{Name: []byte("foo"), Lease: lease1.ID, Value: []byte("0")})
-	if cerr1 != nil {
-		t.Fatal(cerr1)
-	}
+	require.NoError(t, cerr1)
 
 	// overlap other leader so it waits on resign
 	leader2c := make(chan struct{})
@@ -160,9 +154,8 @@ func TestV3ElectionObserve(t *testing.T) {
 	for i := 1; i < 5; i++ {
 		v := []byte(fmt.Sprintf("%d", i))
 		req := &epb.ProclaimRequest{Leader: c1.Leader, Value: v}
-		if _, err := lc.Proclaim(context.TODO(), req); err != nil {
-			t.Fatal(err)
-		}
+		_, err := lc.Proclaim(context.TODO(), req)
+		require.NoError(t, err)
 	}
 	// start second leader
 	lc.Resign(context.TODO(), &epb.ResignRequest{Leader: c1.Leader})
