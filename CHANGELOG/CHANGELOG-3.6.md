@@ -8,7 +8,7 @@ Previous change logs can be found at [CHANGELOG-3.5](https://github.com/etcd-io/
 
 <hr>
 
-## v3.6.0-rc.4 (TBC)
+## v3.6.0-rc.4 (2025-04-15)
 
 ### etcd server
 
@@ -87,7 +87,6 @@ See [code changes](https://github.com/etcd-io/etcd/compare/v3.5.0...v3.6.0).
 - Removed [etcdctl defrag --data-dir](https://github.com/etcd-io/etcd/pull/13793).
 - Removed [etcdctl snapshot status](https://github.com/etcd-io/etcd/pull/13809).
 - Removed [etcdctl snapshot restore](https://github.com/etcd-io/etcd/pull/13809).
-- Removed [etcdutl snapshot save](https://github.com/etcd-io/etcd/pull/13809).
 - Removed [NewZapCoreLoggerBuilder in server/embed](https://github.com/etcd-io/etcd/pull/19404)
 
 ### etcdctl v3
